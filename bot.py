@@ -1,141 +1,93 @@
 import os
-import json
-import datetime
-import pandas as pd
-from dotenv import load_dotenv
+import logging
+from threading import Thread
+from flask import Flask
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import pandas as pd
+
+# --- Flask Keep-Alive Server for Render Free Tier ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Telegram Data Analyst Bot is live!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+# --- Logging Setup ---
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-# 1. Load Environment Variables
-load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# --- Telegram Bot Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a welcome message when the command /start is issued."""
+    user = update.effective_user
+    await update.message.reply_html(
+        f"Hello {user.mention_html()}! I am your Data Analyst Bot.\n\n"
+        "Send me a CSV or Excel file, or ask me questions about your data!"
+    )
 
-# Your public GitHub raw URL for run.jsonl logging
-RAW_LOG_URL = "https://raw.githubusercontent.com/23f3001014/data-analyst-telegram-bot/main/run.jsonl"
-
-# Helper function to append logs to local run.jsonl (using modern timezone-aware UTC)
-def log_interaction(query: str, response_data: dict):
-    log_entry = {
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "query": query,
-        "response": response_data
-    }
-    with open("run.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(log_entry) + "\n")
-
-# Command: /start
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = "Data Analyst Bot Active (Local Engine). Send a dataset (.csv) or ask a question."
-    await update.message.reply_text(welcome)
-
-# Handler: File Uploads (.csv / .xlsx)
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle incoming document files (CSV/Excel) and provide basic analytics."""
     document = update.message.document
-    file_name = document.file_name
-
-    if not (file_name.endswith(".csv") or file_name.endswith(".xlsx")):
-        err_reply = {"error": "Invalid file. Please upload .csv or .xlsx"}
-        await update.message.reply_text(json.dumps(err_reply))
+    file_name = document.file_name.lower()
+    
+    if not (file_name.endswith('.csv') or file_name.endswith('.xlsx') or file_name.endswith('.xls')):
+        await update.message.reply_text("Please upload a valid CSV or Excel file.")
         return
 
+    await update.message.reply_text("Downloading and analyzing your file...")
+    
     file = await context.bot.get_file(document.file_id)
-    download_path = f"temp_{file_name}"
-    await file.download_to_drive(download_path)
+    file_path = f"temp_{document.file_name}"
+    await file.download_to_drive(file_path)
 
     try:
-        df = pd.read_csv(download_path) if file_name.endswith(".csv") else pd.read_excel(download_path)
-        context.user_data["df"] = df
-        context.user_data["dataset_name"] = file_name
-
-        reply = {
-            "answer": {
-                "file_name": file_name,
-                "total_rows": int(df.shape[0]),
-                "total_columns": int(df.shape[1]),
-                "status": "Dataset successfully loaded into memory."
-            },
-            "log_url": RAW_LOG_URL
-        }
-        log_interaction(f"Uploaded file: {file_name}", reply)
-        await update.message.reply_text(json.dumps(reply, indent=2))
-
-    except Exception as e:
-        err_reply = {"error": str(e), "log_url": RAW_LOG_URL}
-        await update.message.reply_text(json.dumps(err_reply))
-    finally:
-        if os.path.exists(download_path):
-            os.remove(download_path)
-
-# Handler: Direct Text Questions using Pandas logic
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_query = update.message.text.strip()
-
-    if "df" not in context.user_data:
-        err_reply = {
-            "answer": {"error": "Please upload a CSV dataset file first before asking questions."},
-            "log_url": RAW_LOG_URL
-        }
-        await update.message.reply_text(json.dumps(err_reply, indent=2))
-        return
-
-    df = context.user_data["df"]
-    query_lower = user_query.lower()
-    answer_data = {}
-
-    try:
-        if "highest" in query_lower and ("party" in query_lower or "candidate" in query_lower):
-            party_col = next((col for col in df.columns if 'party' in col.lower() or 'candidate' in col.lower()), df.columns[0])
-            vote_col = next((col for col in df.columns if 'vote' in col.lower() or 'total' in col.lower()), None)
-            
-            if vote_col:
-                top_row = df.loc[df[vote_col].idxmax()]
-                answer_data = {
-                    "party_or_candidate": str(top_row[party_col]),
-                    "votes": int(top_row[vote_col])
-                }
-            else:
-                answer_data = {"result": str(df[party_col].value_counts().idxmax())}
-        
-        elif "total rows" in query_lower or "how many rows" in query_lower:
-            answer_data = {"total_rows": int(df.shape[0])}
-        
+        if file_name.endswith('.csv'):
+            df = pd.read_csv(file_path)
         else:
-            answer_data = {
-                "query_received": user_query,
-                "columns_available": list(df.columns)[:5],
-                "row_count": int(df.shape[0])
-            }
-
-        response_obj = {
-            "answer": answer_data,
-            "log_url": RAW_LOG_URL
-        }
+            df = pd.read_excel(file_path)
+            
+        summary = f"📊 **Dataset Summary:**\n\n" \
+                  f"• **Rows:** {df.shape[0]}\n" \
+                  f"• **Columns:** {df.shape[1]}\n\n" \
+                  f"• **Columns List:** {', '.join(df.columns.astype(str))}"
         
-        log_interaction(user_query, response_obj)
-        await update.message.reply_text(json.dumps(response_obj, indent=2))
-
+        await update.message.reply_text(summary, parse_mode="Markdown")
+        
     except Exception as e:
-        fallback = {
-            "answer": {"error": f"Processing error: {str(e)}"},
-            "log_url": RAW_LOG_URL
-        }
-        log_interaction(user_query, fallback)
-        await update.message.reply_text(json.dumps(fallback, indent=2))
+        await update.message.reply_text(f"Error processing file: {str(e)}")
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-# Main Entry Point
+def main() -> None:
+    """Start the bot."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("No TELEGRAM_BOT_TOKEN environment variable found!")
+
+    # Start the keep-alive web server for Render port binding
+    keep_alive()
+
+    # Create the Application
+    application = Application.builder().token(token).build()
+
+    # Register handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
+    # Run the bot using polling
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 if __name__ == "__main__":
-    print("Starting Local Data Analyst Bot...")
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Bot running...")
-    app.run_polling()
+    main()
