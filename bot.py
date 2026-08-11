@@ -82,7 +82,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             final_output = json.dumps(response_data, indent=2)
             
             # Send the JSON back to the user inside a code block
-            await update.message.reply_text(f"```json\n{final_output}\n```", parse_mode="Markdown")
+            await update.message.reply_text(final_output)
             
         else:
             # Fallback if they do not provide a recognized caption
