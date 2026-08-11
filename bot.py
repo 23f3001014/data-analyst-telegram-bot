@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from threading import Thread
 from flask import Flask
@@ -33,13 +34,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     await update.message.reply_html(
         f"Hello {user.mention_html()}! I am your Data Analyst Bot.\n\n"
-        "Send me a CSV or Excel file, or ask me questions about your data!"
+        "Send me a CSV or Excel file with a caption (like 'higest vote share') to analyze it!"
     )
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming document files (CSV/Excel) and provide basic analytics."""
+    """Handle incoming document files and process data based on the caption."""
     document = update.message.document
     file_name = document.file_name.lower()
+    
+    # Grab the user's question from the caption
+    caption = update.message.caption.lower() if update.message.caption else ""
     
     if not (file_name.endswith('.csv') or file_name.endswith('.xlsx') or file_name.endswith('.xls')):
         await update.message.reply_text("Please upload a valid CSV or Excel file.")
@@ -52,21 +56,44 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await file.download_to_drive(file_path)
 
     try:
+        # Load the data
         if file_name.endswith('.csv'):
             df = pd.read_csv(file_path)
         else:
             df = pd.read_excel(file_path)
             
-        summary = f"📊 **Dataset Summary:**\n\n" \
-                  f"• **Rows:** {df.shape[0]}\n" \
-                  f"• **Columns:** {df.shape[1]}\n\n" \
-                  f"• **Columns List:** {', '.join(df.columns.astype(str))}"
-        
-        await update.message.reply_text(summary, parse_mode="Markdown")
-        
+        # --- Assignment Logic for JSON Output ---
+        if "higest vote share" in caption or "highest" in caption:
+            # Find the row with the maximum number of votes
+            max_idx = df['Votes'].idxmax()
+            candidate_name = str(df.loc[max_idx, 'Candidate'])
+            highest_votes = int(df.loc[max_idx, 'Votes'])
+            
+            # Construct the required JSON dictionary
+            response_data = {
+                "answer": {
+                    "party_or_candidate": candidate_name,
+                    "votes": highest_votes
+                },
+                "log_url": "https://raw.githubusercontent.com/23f3001014/data-analyst-telegram-bot/main/run.jsonl"
+            }
+            
+            # Format nicely as a JSON string
+            final_output = json.dumps(response_data, indent=2)
+            
+            # Send the JSON back to the user inside a code block
+            await update.message.reply_text(f"```json\n{final_output}\n```", parse_mode="Markdown")
+            
+        else:
+            # Fallback if they do not provide a recognized caption
+            await update.message.reply_text(
+                "Please provide a specific query in the file caption (e.g., 'higest vote share')."
+            )
+            
     except Exception as e:
         await update.message.reply_text(f"Error processing file: {str(e)}")
     finally:
+        # Clean up the downloaded file so Render doesn't run out of storage
         if os.path.exists(file_path):
             os.remove(file_path)
 
