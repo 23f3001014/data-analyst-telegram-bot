@@ -3,15 +3,12 @@ import pandas as pd
 from threading import Thread
 from flask import Flask
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Load environment variables 
 load_dotenv()
-
-# Configure Gemini API
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # --- Dummy Web Server to keep Render happy ---
 app = Flask(__name__)
@@ -57,9 +54,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Convert the dataframe to a string representation so Gemini can read it
         data_string = df.to_string() 
-
-        # Call the updated Gemini AI model
-        model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Build the prompt combining instructions, data, and the user's question
         prompt = f"""
@@ -70,9 +64,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         Respond ONLY with raw JSON format. Do not use markdown formatting block fences like ```json.
         """
+
+        # Initialize the new Gemini client
+        client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         
-        # Get the answer from Gemini
-        response = model.generate_content(prompt)
+        # Get the answer using the stable gemini-3.6-flash model
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+        )
         
         # Send the raw JSON string back to Telegram
         await update.message.reply_text(response.text)
