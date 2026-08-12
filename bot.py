@@ -52,7 +52,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
 
         # Call Gemini and enforce JSON output format
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
