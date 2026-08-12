@@ -59,7 +59,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         Based on this dataset, answer the following query: "{caption}"
         
-        Respond ONLY with raw JSON format. Do not use markdown formatting block fences like ```json.
+        Respond ONLY with raw JSON format containing the answer details. Do not use markdown block fences like ```json.
         """
 
         # Initialize the new Gemini client and query gemini-3.6-flash
@@ -69,12 +69,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             contents=prompt,
         )
         
-        # Ensure message doesn't exceed Telegram's 4000 character limit
-        answer_text = response.text
-        if len(answer_text) > 4000:
-            answer_text = answer_text[:3997] + "..."
+        # Clean the response text
+        ai_output = response.text.strip()
+        
+        # Manually append the log_url wrapper to guarantee it's always included
+        final_json = f"""{{
+  "answer": {ai_output},
+  "log_url": "[https://raw.githubusercontent.com/23f3001014/data-analyst-telegram-bot/main/run.jsonl](https://raw.githubusercontent.com/23f3001014/data-analyst-telegram-bot/main/run.jsonl)"
+}}"""
+
+        # Ensure final message doesn't exceed Telegram's 4000 character limit
+        if len(final_json) > 4000:
+            final_json = final_json[:3997] + "..."
             
-        await update.message.reply_text(answer_text)
+        await update.message.reply_text(final_json)
 
         # Delete the file from the server to save space
         os.remove(file_path)
