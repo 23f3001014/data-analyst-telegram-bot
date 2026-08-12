@@ -16,10 +16,6 @@ WEBHOOK_URL = f"https://data-analyst-telegram-bot-fz91.onrender.com/{TOKEN}"
 app = Flask(__name__)
 telegram_app = Application.builder().token(TOKEN).build()
 
-# Create a dedicated event loop for the background thread to prevent closure errors
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send me a CSV or Excel file, and ask your question in the caption!")
 
@@ -33,6 +29,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Downloading and analyzing your file with Gemini...")
 
+    file_path = None
     try:
         file = await context.bot.get_file(document.file_id)
         file_path = f"{document.file_name}"
@@ -44,9 +41,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             df = pd.read_excel(file_path)
         else:
             await update.message.reply_text("Unsupported file format. Please send a CSV or Excel file.")
-            os.remove(file_path)
+            if os.path.exists(file_path):
+                os.remove(file_path)
             return
 
+        # Optimization: Limit to first 500 rows to prevent token exhaustion
         if len(df) > 500:
             df = df.head(500)
 
@@ -78,9 +77,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             final_json = final_json[:3997] + "..."
             
         await update.message.reply_text(final_json)
-        os.remove(file_path)
+
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
 
     except Exception as e:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
         await update.message.reply_text(f"An error occurred: {str(e)}")
 
 telegram_app.add_handler(CommandHandler("start", start))
@@ -92,26 +95,26 @@ def home():
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    """Thread-safe webhook receiver"""
+    """Robust, non-blocking webhook handler for python-telegram-bot v20+"""
     json_data = request.get_json(force=True)
     update = Update.de_json(json_data, telegram_app.bot)
     
-    # Run update processing on the persistent event loop safely
-    async def process():
-        async with telegram_app:
+    async def process_update_safely():
+        try:
+            await telegram_app.initialize()
             await telegram_app.process_update(update)
+            await telegram_app.shutdown()
+        except Exception as err:
+            print(f"Error processing update: {err}")
 
-    future = asyncio.run_coroutine_threadsafe(process(), loop)
-    try:
-        future.result(timeout=30)
-    except Exception as e:
-        print(f"Webhook processing error: {e}")
-        
+    asyncio.run(process_update_safely())
     return "OK", 200
 
 async def setup_webhook():
+    await telegram_app.initialize()
     await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
+    await telegram_app.shutdown()
 
 if __name__ == '__main__':
-    loop.run_until_complete(setup_webhook())
+    asyncio.run(setup_webhook())
     app.run(host="0.0.0.0", port=PORT)
