@@ -1,7 +1,6 @@
 import os
 import pandas as pd
-from threading import Thread
-from flask import Flask
+from flask import Flask, request
 from dotenv import load_dotenv
 from google import genai
 from telegram import Update
@@ -10,17 +9,16 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # Load environment variables 
 load_dotenv()
 
-# --- Dummy Web Server to keep Render happy ---
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = int(os.environ.get("PORT", 8080))
+# Replace this with your actual Render live URL:
+WEBHOOK_URL = f"https://data-analyst-telegram-bot-fz91.onrender.com/{TOKEN}"
+
+# Initialize Flask app
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Bot is running perfectly!"
-
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-# ---------------------------------------------
+# Initialize Telegram application globally
+telegram_app = Application.builder().token(TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send me a CSV or Excel file, and ask your question in the caption!")
@@ -29,7 +27,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
     caption = update.message.caption
 
-    # Ensure a question is asked in the caption
     if not caption:
         await update.message.reply_text("Please provide a specific query in the file caption (e.g., 'Who won the election?').")
         return
@@ -37,12 +34,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Downloading and analyzing your file with Gemini...")
 
     try:
-        # Download the file to local server storage
         file = await context.bot.get_file(document.file_id)
         file_path = f"{document.file_name}"
         await file.download_to_drive(file_path)
 
-        # Read the dataset using Pandas
         if file_path.endswith('.csv'):
             df = pd.read_csv(file_path)
         elif file_path.endswith(('.xls', '.xlsx')):
@@ -52,10 +47,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
             return
 
-        # Convert the dataframe to a string representation so Gemini can read it
         data_string = df.to_string() 
         
-        # Build the prompt combining instructions, data, and the user's question
         prompt = f"""
         Here is a dataset:
         {data_string}
@@ -65,41 +58,48 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         Respond ONLY with raw JSON format. Do not use markdown formatting block fences like ```json.
         """
 
-        # Initialize the new Gemini client
         client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-        
-        # Get the answer using the stable gemini-3.6-flash model
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt,
         )
         
-        # Send the raw JSON string back to Telegram
         await update.message.reply_text(response.text)
-
-        # Delete the file from the server to save space
         os.remove(file_path)
 
     except Exception as e:
         await update.message.reply_text(f"An error occurred: {str(e)}")
 
-def main():
-    # Start the dummy web server in the background
-    server_thread = Thread(target=run_server)
-    server_thread.start()
+# Register handlers to the telegram application
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    # Start the Telegram bot
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    application = Application.builder().token(bot_token).build()
+@app.route('/')
+def home():
+    return "Bot is running via Webhooks!"
 
-    # Add command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
-    print("Bot is running and waiting for files...")
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    """Endpoint that receives updates from Telegram"""
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, telegram_app.bot)
     
-    # Run the bot until stopped
-    application.run_polling()
+    # Run the update processing in an asynchronous context loop
+    async def process():
+        async with telegram_app:
+            await telegram_app.process_update(update)
+            
+    import asyncio
+    asyncio.run(process())
+    return "OK", 200
+
+async def setup_webhook():
+    await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
 
 if __name__ == '__main__':
-    main()
+    # Automatically register the webhook URL with Telegram on startup
+    import asyncio
+    asyncio.run(setup_webhook())
+    
+    # Run Flask server to listen for incoming webhooks
+    app.run(host="0.0.0.0", port=PORT)
