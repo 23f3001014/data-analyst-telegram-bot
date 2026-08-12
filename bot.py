@@ -6,18 +6,13 @@ from google import genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Load environment variables 
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 8080))
-# Replace this with your actual Render live URL:
 WEBHOOK_URL = f"https://data-analyst-telegram-bot-fz91.onrender.com/{TOKEN}"
 
-# Initialize Flask app
 app = Flask(__name__)
-
-# Initialize Telegram application globally
 telegram_app = Application.builder().token(TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,10 +42,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
             return
 
+        # OPTIMIZATION: Keep only the first 500 rows to prevent token quota exhaustion
+        if len(df) > 500:
+            df = df.head(500)
+
         data_string = df.to_string() 
         
         prompt = f"""
-        Here is a dataset:
+        Here is a sample dataset (truncated to fit token limits):
         {data_string}
         
         Based on this dataset, answer the following query: "{caption}"
@@ -70,7 +69,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"An error occurred: {str(e)}")
 
-# Register handlers to the telegram application
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
@@ -80,11 +78,9 @@ def home():
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    """Endpoint that receives updates from Telegram"""
     json_data = request.get_json(force=True)
     update = Update.de_json(json_data, telegram_app.bot)
     
-    # Run the update processing in an asynchronous context loop
     async def process():
         async with telegram_app:
             await telegram_app.process_update(update)
@@ -97,9 +93,6 @@ async def setup_webhook():
     await telegram_app.bot.set_webhook(url=WEBHOOK_URL)
 
 if __name__ == '__main__':
-    # Automatically register the webhook URL with Telegram on startup
     import asyncio
     asyncio.run(setup_webhook())
-    
-    # Run Flask server to listen for incoming webhooks
     app.run(host="0.0.0.0", port=PORT)
